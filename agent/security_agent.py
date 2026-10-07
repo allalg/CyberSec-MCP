@@ -88,10 +88,39 @@ class SecurityAgent:
             tools=tools,
         )
 
-        chat = self.client.chats.create(model=self.model_name, config=config)
+        candidate_models = list(dict.fromkeys([self.model_name, "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-pro"]))
+        chat = None
+        response = None
+        last_err = None
 
         print(f"\n[Agent] Thinking on task: '{user_prompt}'...")
-        response = chat.send_message(user_prompt)
+
+        for m_name in candidate_models:
+            for attempt in range(3):
+                try:
+                    chat = self.client.chats.create(model=m_name, config=config)
+                    response = chat.send_message(user_prompt)
+                    self.model_name = m_name
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    err_str = str(e)
+                    if "503" in err_str or "high demand" in err_str.lower() or "UNAVAILABLE" in err_str:
+                        print(f"  [!] Model {m_name} busy (503 high demand). Waiting 2s before retry (attempt {attempt+1}/3)...")
+                        await asyncio.sleep(2)
+                    elif "404" in err_str or "NOT_FOUND" in err_str:
+                        print(f"  [!] Model {m_name} not available (404). Trying fallback model...")
+                        break
+                    else:
+                        print(f"  [!] Error with {m_name}: {e}")
+                        break
+            if response is not None:
+                break
+
+        if response is None:
+            print(f"[!] All live Gemini models temporarily unavailable: {last_err}")
+            return await self._run_autonomous_offline(user_prompt, session_id)
 
         # Tool execution loop
         max_turns = 10
@@ -112,13 +141,21 @@ class SecurityAgent:
                 if result.get("error"):
                     print(f"  [!] [Policy/Error]: {result.get('error')}")
 
-                # Send tool response back to Gemini
-                response = chat.send_message(
-                    types.Part.from_function_response(
-                        name=tool_name,
-                        response={"result": result},
-                    )
+                # Send tool response back to Gemini (with retry for 503)
+                tool_part = types.Part.from_function_response(
+                    name=tool_name,
+                    response={"result": result},
                 )
+                for attempt in range(3):
+                    try:
+                        response = chat.send_message(tool_part)
+                        break
+                    except Exception as e:
+                        if "503" in str(e) or "UNAVAILABLE" in str(e):
+                            print("  [!] 503 spike during tool processing. Waiting 2s...")
+                            await asyncio.sleep(2)
+                        else:
+                            raise e
 
         return response.text or "[Agent completed investigation with no text response]"
 
