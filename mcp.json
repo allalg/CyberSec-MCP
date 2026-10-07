@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/mcp.json",
+  "mcpServers": {
+    "cybersec": {
+      "command": "python",
+      "args": ["-m", "server.main"],
+      "env": {
+        "LOG_LEVEL": "INFO",
+        "AUDIT_DB_PATH": "audit.db",
+        "MAX_CONCURRENT_SANDBOXES": "3"
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  vulnerable-web:
+    build:
+      context: ./vulnerable-app
+      dockerfile: Dockerfile
+    container_name: cybersec-lab-web
+    hostname: lab.local
+    networks:
+      cybersec-lab:
+        ipv4_address: 172.28.0.10
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  ssh-service:
+    image: alpine:3.19
+    container_name: cybersec-lab-ssh
+    command: /bin/sh -c "apk add --no-cache openssh-server && ssh-keygen -A && /usr/sbin/sshd -D -e"
+    networks:
+      cybersec-lab:
+        ipv4_address: 172.28.0.20
+    ports:
+      - "2222:22"
+    restart: unless-stopped
+
+networks:
+  cybersec-lab:
+    name: cybersec-lab
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1

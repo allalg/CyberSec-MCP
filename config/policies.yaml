@@ -1,0 +1,62 @@
+tools:
+  nmap_scan:
+    risk: medium
+    requires_approval: false
+    timeout: 120
+    blocked_flags:
+      - "-sE"
+      - "--script=exploit*"
+      - "--script=brute*"
+      - "-oX"
+      - "-oN"
+      - "-oG"
+    max_concurrent: 2
+
+  dns_lookup:
+    risk: low
+    requires_approval: false
+    timeout: 30
+    blocked_flags: []
+    max_concurrent: 5
+
+  whois_lookup:
+    risk: low
+    requires_approval: false
+    timeout: 30
+    blocked_flags: []
+    max_concurrent: 3
+
+  http_probe:
+    risk: low
+    requires_approval: false
+    timeout: 60
+    blocked_flags: []
+    max_concurrent: 3
+
+  directory_scan:
+    risk: medium
+    requires_approval: false
+    timeout: 180
+    blocked_flags:
+      - "--recursive"
+      - "-r"
+      - "--depth"
+    max_concurrent: 1
+
+  hash_file:
+    risk: low
+    requires_approval: false
+    timeout: 30
+    blocked_flags: []
+    max_concurrent: 5
+
+allowed_targets:
+  networks:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+    - "127.0.0.0/8"
+  domains:
+    - "*.lab.local"
+    - "*.test"
+    - "localhost"
