@@ -1,4 +1,4 @@
-"""Custom Cybersecurity Agent — powered by Google Gemini API and CyberSec MCP.
+"""Custom Cybersecurity Agent — powered by Google Gemini API and Groq API fallback with CyberSec MCP.
 
 Orchestrates defensive security assessments, runs nmap/web/dns tools through
 the sandboxed MCP security pipeline, and generates audit reports.
@@ -34,18 +34,30 @@ OPERATIONAL RULES:
 
 
 class SecurityAgent:
-    """Autonomous Cybersecurity Agent using Gemini and CyberSec MCP."""
+    """Autonomous Cybersecurity Agent using Gemini with Groq fallback and CyberSec MCP."""
 
-    def __init__(self, api_key: str | None = None, model: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        groq_key: str | None = None,
+        groq_model: str | None = None,
+    ):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.model_name = model or os.getenv("GEMINI_MODEL") or "gemini-3.8-flash"
+        self.groq_key = groq_key or os.getenv("GROQ_API_KEY")
+        self.groq_model = groq_model or os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile"
         self.mcp_client = LocalMCPClient()
+
+        self.client = None
+        self.groq_client = None
+
         self._init_gemini()
+        self._init_groq()
 
     def _init_gemini(self) -> None:
         """Initialize Google GenAI client if API key is present."""
         if not self.api_key:
-            self.client = None
             return
 
         try:
@@ -55,14 +67,43 @@ class SecurityAgent:
             print(f"[!] Warning: Could not initialize Gemini client: {e}")
             self.client = None
 
-    async def run(self, user_prompt: str, session_id: str = "session-agent-01") -> str:
-        """Run the agent on a user prompt through tool execution loop."""
-        if not self.client:
-            return await self._run_autonomous_offline(user_prompt, session_id)
+    def _init_groq(self) -> None:
+        """Initialize Groq client if API key is present."""
+        if not self.groq_key:
+            return
 
+        try:
+            from groq import Groq
+            self.groq_client = Groq(api_key=self.groq_key)
+        except Exception as e:
+            print(f"[!] Warning: Could not initialize Groq client: {e}")
+            self.groq_client = None
+
+    async def run(self, user_prompt: str, session_id: str = "session-agent-01") -> str:
+        """Run the agent on a user prompt with Gemini primary and Groq fallback."""
+        # 1. Try Gemini if configured
+        if self.client:
+            try:
+                return await self._run_gemini(user_prompt, session_id)
+            except Exception as e:
+                err_str = str(e)
+                print(f"\n[!] Gemini API encountered an issue ({e}). Checking Groq fallback...")
+
+        # 2. Try Groq if configured
+        if self.groq_client:
+            try:
+                print(f"[+] Switching to Groq API (model: {self.groq_model})...")
+                return await self._run_groq(user_prompt, session_id)
+            except Exception as e:
+                print(f"\n[!] Groq API encountered an issue ({e}). Falling back to autonomous mode...")
+
+        # 3. Fallback to Autonomous Offline Engine
+        return await self._run_autonomous_offline(user_prompt, session_id)
+
+    async def _run_gemini(self, user_prompt: str, session_id: str) -> str:
+        """Run via Google GenAI SDK."""
         from google.genai import types
 
-        # Register MCP tools for Gemini
         raw_tools = self.mcp_client.get_tools_declarations()
         gemini_function_declarations = []
         for t in raw_tools:
@@ -88,15 +129,15 @@ class SecurityAgent:
             tools=tools,
         )
 
-        candidate_models = list(dict.fromkeys([self.model_name, "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-pro"]))
+        candidate_models = list(dict.fromkeys([self.model_name, "gemini-2.0-flash", "gemini-1.5-flash"]))
         chat = None
         response = None
         last_err = None
 
-        print(f"\n[Agent] Thinking on task: '{user_prompt}'...")
+        print(f"\n[Agent -> Gemini] Thinking on task: '{user_prompt}'...")
 
         for m_name in candidate_models:
-            for attempt in range(3):
+            for attempt in range(2):
                 try:
                     chat = self.client.chats.create(model=m_name, config=config)
                     response = chat.send_message(user_prompt)
@@ -106,21 +147,19 @@ class SecurityAgent:
                 except Exception as e:
                     last_err = e
                     err_str = str(e)
-                    if "503" in err_str or "high demand" in err_str.lower() or "UNAVAILABLE" in err_str:
-                        print(f"  [!] Model {m_name} busy (503 high demand). Waiting 2s before retry (attempt {attempt+1}/3)...")
+                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                        # Rate limit reached on Gemini
+                        raise e
+                    elif "503" in err_str or "UNAVAILABLE" in err_str:
+                        print(f"  [!] Model {m_name} busy (503). Retrying...")
                         await asyncio.sleep(2)
-                    elif "404" in err_str or "NOT_FOUND" in err_str:
-                        print(f"  [!] Model {m_name} not available (404). Trying fallback model...")
-                        break
                     else:
-                        print(f"  [!] Error with {m_name}: {e}")
                         break
             if response is not None:
                 break
 
         if response is None:
-            print(f"[!] All live Gemini models temporarily unavailable: {last_err}")
-            return await self._run_autonomous_offline(user_prompt, session_id)
+            raise last_err or RuntimeError("No Gemini response")
 
         # Tool execution loop
         max_turns = 10
@@ -132,7 +171,6 @@ class SecurityAgent:
                 args = dict(call.args)
                 print(f"\n  [*] [Agent Tool Call] -> {tool_name}({args})")
 
-                # Execute through CyberSec MCP pipeline
                 result = await self.mcp_client.execute_tool(tool_name, args, session_id=session_id)
                 status = result.get("status", "unknown")
                 findings_count = len(result.get("findings", []))
@@ -141,27 +179,67 @@ class SecurityAgent:
                 if result.get("error"):
                     print(f"  [!] [Policy/Error]: {result.get('error')}")
 
-                # Send tool response back to Gemini (with retry for 503)
                 tool_part = types.Part.from_function_response(
                     name=tool_name,
                     response={"result": result},
                 )
-                for attempt in range(3):
-                    try:
-                        response = chat.send_message(tool_part)
-                        break
-                    except Exception as e:
-                        if "503" in str(e) or "UNAVAILABLE" in str(e):
-                            print("  [!] 503 spike during tool processing. Waiting 2s...")
-                            await asyncio.sleep(2)
-                        else:
-                            raise e
+                response = chat.send_message(tool_part)
 
-        return response.text or "[Agent completed investigation with no text response]"
+        return response.text or "[Agent completed investigation]"
+
+    async def _run_groq(self, user_prompt: str, session_id: str) -> str:
+        """Execute reasoning and tool calling loop using Groq API."""
+        print(f"\n[Agent -> Groq] Thinking with {self.groq_model} on task: '{user_prompt}'...")
+        tools = self.mcp_client.get_openai_tools()
+        messages = [
+            {"role": "system", "content": SYSTEM_INSTRUCTION},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        max_turns = 10
+        turn = 0
+        while turn < max_turns:
+            turn += 1
+            response = self.groq_client.chat.completions.create(
+                model=self.groq_model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=0.2,
+            )
+            msg = response.choices[0].message
+            messages.append(msg)
+
+            if not msg.tool_calls:
+                return msg.content or "[Groq completed investigation with no text response]"
+
+            for tc in msg.tool_calls:
+                tool_name = tc.function.name
+                try:
+                    args = json.loads(tc.function.arguments)
+                except Exception:
+                    args = {}
+
+                print(f"\n  [*] [Agent Tool Call] -> {tool_name}({args})")
+                result = await self.mcp_client.execute_tool(tool_name, args, session_id=session_id)
+                status = result.get("status", "unknown")
+                findings_count = len(result.get("findings", []))
+
+                print(f"  [+] [MCP Result] Status: {status} | Findings: {findings_count}")
+                if result.get("error"):
+                    print(f"  [!] [Policy/Error]: {result.get('error')}")
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result),
+                })
+
+        return "[Agent completed multi-turn tool execution limit]"
 
     async def _run_autonomous_offline(self, prompt: str, session_id: str) -> str:
-        """Autonomous heuristic test runner when no GEMINI_API_KEY is configured."""
-        print("\n[!] No GEMINI_API_KEY detected. Running in Autonomous Offline Test Mode...")
+        """Autonomous heuristic test runner when no LLM API keys are active."""
+        print("\n[!] Running in Autonomous Offline Mode...")
         print(f"[Agent Plan] Analyzing request: '{prompt}'")
 
         report_lines = [
@@ -171,7 +249,6 @@ class SecurityAgent:
             "---",
         ]
 
-        # Extract target from prompt if any
         import re
         target = "127.0.0.1"
         url_match = re.search(r"https?://([^\s/]+)", prompt)
@@ -189,7 +266,7 @@ class SecurityAgent:
             for f in nmap_res["findings"]:
                 report_lines.append(f"  - Port **{f.get('port')}** ({f.get('protocol')}): `{f.get('state')}` - Service: `{f.get('service')}`")
         else:
-            report_lines.append(f"  - Error / Note: {nmap_res.get('error', 'No open ports detected')}")
+            report_lines.append(f"  - Note: {nmap_res.get('error', 'No open ports detected')}")
 
         # Step 2: HTTP probe
         probe_target = f"http://{target}:8000" if "8000" in prompt else f"http://{target}"
@@ -204,7 +281,6 @@ class SecurityAgent:
         else:
             report_lines.append(f"  - Error: {http_res.get('error')}")
 
-        # Summary
         report_lines.append("\n### 3. Recommendations & Next Steps")
         report_lines.append("1. **Verify Services**: Ensure only necessary ports are accessible.")
         report_lines.append("2. **Security Headers**: Implement `Content-Security-Policy` and `X-Frame-Options` to mitigate clickjacking and XSS.")
@@ -220,9 +296,16 @@ async def main():
     parser.add_argument("prompt", nargs="?", default=None, help="Security assessment goal / task")
     parser.add_argument("--key", default=None, help="Gemini API Key (optional, defaults to GEMINI_API_KEY env)")
     parser.add_argument("--model", default=None, help="Gemini model name (default: gemini-3.8-flash)")
+    parser.add_argument("--groq-key", default=None, help="Groq API Key (optional, defaults to GROQ_API_KEY env)")
+    parser.add_argument("--groq-model", default=None, help="Groq model (default: llama-3.3-70b-versatile)")
     args = parser.parse_args()
 
-    agent = SecurityAgent(api_key=args.key, model=args.model)
+    agent = SecurityAgent(
+        api_key=args.key,
+        model=args.model,
+        groq_key=args.groq_key,
+        groq_model=args.groq_model,
+    )
 
     if args.prompt:
         result = await agent.run(args.prompt)
@@ -236,9 +319,11 @@ async def main():
     print("CyberSec AI Agent -- Interactive Security Assessment Console")
     print("=" * 65)
     if agent.client:
-        print("[+] Backend: Google Gemini API (Live Agent Mode)")
-    else:
-        print("[!] Backend: Autonomous Offline Engine (Set GEMINI_API_KEY for live LLM)")
+        print("[+] Primary Backend: Google Gemini API")
+    if agent.groq_client:
+        print(f"[+] Fallback Backend: Groq API ({agent.groq_model})")
+    if not agent.client and not agent.groq_client:
+        print("[!] Backend: Autonomous Offline Engine (Set GEMINI_API_KEY or GROQ_API_KEY)")
     print("Type 'exit' or 'quit' to leave.\n")
 
     while True:

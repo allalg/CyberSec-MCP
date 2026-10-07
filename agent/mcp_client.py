@@ -85,6 +85,35 @@ class LocalMCPClient:
 
         return declarations
 
+    def get_openai_tools(self) -> list[dict[str, Any]]:
+        """Return tool definitions in standard OpenAI/Groq function calling format."""
+        raw = self.get_tools_declarations()
+        openai_tools = []
+        for t in raw:
+            params = t["parameters"]
+            props = {}
+            for k, v in params["properties"].items():
+                t_type = v.get("type", "STRING").lower()
+                if t_type == "bool":
+                    t_type = "boolean"
+                elif t_type == "int":
+                    t_type = "integer"
+                props[k] = {"type": t_type, "description": v.get("description", "")}
+
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": {
+                        "type": "object",
+                        "properties": props,
+                        "required": params.get("required", []),
+                    },
+                },
+            })
+        return openai_tools
+
     async def execute_tool(self, name: str, arguments: dict[str, Any], session_id: str | None = None) -> dict[str, Any]:
         """Execute a tool through the CyberSec MCP security pipeline."""
         tool = self.registry.get(name)
