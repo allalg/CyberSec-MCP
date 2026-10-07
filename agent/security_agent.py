@@ -36,9 +36,9 @@ OPERATIONAL RULES:
 class SecurityAgent:
     """Autonomous Cybersecurity Agent using Gemini and CyberSec MCP."""
 
-    def __init__(self, api_key: str | None = None, model: str = "gemini-2.5-flash"):
+    def __init__(self, api_key: str | None = None, model: str | None = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-        self.model_name = model
+        self.model_name = model or os.getenv("GEMINI_MODEL") or "gemini-3.8-flash"
         self.mcp_client = LocalMCPClient()
         self._init_gemini()
 
@@ -182,9 +182,10 @@ async def main():
     parser = argparse.ArgumentParser(description="CyberSec AI Security Agent")
     parser.add_argument("prompt", nargs="?", default=None, help="Security assessment goal / task")
     parser.add_argument("--key", default=None, help="Gemini API Key (optional, defaults to GEMINI_API_KEY env)")
+    parser.add_argument("--model", default=None, help="Gemini model name (default: gemini-3.8-flash)")
     args = parser.parse_args()
 
-    agent = SecurityAgent(api_key=args.key)
+    agent = SecurityAgent(api_key=args.key, model=args.model)
 
     if args.prompt:
         result = await agent.run(args.prompt)
