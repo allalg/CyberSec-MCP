@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "cybersec": {
+      "command": "python",
+      "args": ["-m", "server.main"],
+      "env": {
+        "PYTHONPATH": "c:\\Users\\nikhi\\OneDrive\\Documents\\project\\CyberSec MCP",
+        "LOG_LEVEL": "INFO",
+        "AUDIT_DB_PATH": "c:\\Users\\nikhi\\OneDrive\\Documents\\project\\CyberSec MCP\\audit.db",
+        "MAX_CONCURRENT_SANDBOXES": "3"
+      }
+    }
+  }
+}
