@@ -67,6 +67,11 @@ def sample_policy_config(sample_allowed_targets: AllowedTargets) -> PolicyConfig
                 requires_approval=True,
                 timeout=60,
             ),
+            "hash_file": PolicyRule(
+                risk=RiskLevel.LOW,
+                requires_approval=False,
+                timeout=30,
+            ),
         },
         allowed_targets=sample_allowed_targets,
     )

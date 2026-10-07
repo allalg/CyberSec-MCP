@@ -66,9 +66,10 @@ class LocalMCPClient:
                 required = ["target"]
             elif tool.name == "hash_file":
                 properties = {
+                    "text": {"type": "STRING", "description": "Raw string or text content to hash directly"},
                     "file_path": {"type": "STRING", "description": "Absolute file path to hash (within /data or /tmp)"},
                 }
-                required = ["file_path"]
+                required = []
             else:
                 properties = {"target": {"type": "STRING", "description": "Target"}}
                 required = ["target"]
@@ -120,7 +121,7 @@ class LocalMCPClient:
         if not tool:
             return {"error": f"Tool '{name}' not found in registry"}
 
-        target = arguments.get("target") or arguments.get("file_path") or ""
+        target = arguments.get("target") or arguments.get("file_path") or arguments.get("text") or ""
         req = ToolRequest(
             tool_name=name,
             target=str(target),

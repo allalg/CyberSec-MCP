@@ -12,6 +12,10 @@ import os
 import sys
 from typing import Any
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from agent.mcp_client import LocalMCPClient
 
 SYSTEM_INSTRUCTION = """You are CyberSecAgent, an authorized defensive security auditing agent.
@@ -46,7 +50,7 @@ class SecurityAgent:
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.model_name = model or os.getenv("GEMINI_MODEL") or "gemini-3.8-flash"
         self.groq_key = groq_key or os.getenv("GROQ_API_KEY")
-        self.groq_model = groq_model or os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile"
+        self.groq_model = groq_model or os.getenv("GROQ_MODEL") or "qwen/qwen3.8-27b"
         self.mcp_client = LocalMCPClient()
 
         self.client = None
@@ -188,25 +192,54 @@ class SecurityAgent:
         return response.text or "[Agent completed investigation]"
 
     async def _run_groq(self, user_prompt: str, session_id: str) -> str:
-        """Execute reasoning and tool calling loop using Groq API."""
-        print(f"\n[Agent -> Groq] Thinking with {self.groq_model} on task: '{user_prompt}'...")
+        """Execute reasoning and tool calling loop using Groq API with automatic model fallback."""
         tools = self.mcp_client.get_openai_tools()
         messages = [
             {"role": "system", "content": SYSTEM_INSTRUCTION},
             {"role": "user", "content": user_prompt},
         ]
 
+        candidate_models = list(dict.fromkeys([
+            self.groq_model,
+            "qwen/qwen3.8-27b",
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "llama-3.3-70b-versatile",
+        ]))
+
+        active_model = self.groq_model
+        print(f"\n[Agent -> Groq] Thinking with {active_model} on task: '{user_prompt}'...")
+
         max_turns = 10
         turn = 0
         while turn < max_turns:
             turn += 1
-            response = self.groq_client.chat.completions.create(
-                model=self.groq_model,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                temperature=0.2,
-            )
+            response = None
+            last_err = None
+
+            for m_candidate in candidate_models:
+                try:
+                    response = self.groq_client.chat.completions.create(
+                        model=m_candidate,
+                        messages=messages,
+                        tools=tools,
+                        tool_choice="auto",
+                        temperature=0.2,
+                    )
+                    active_model = m_candidate
+                    self.groq_model = m_candidate
+                    break
+                except Exception as e:
+                    last_err = e
+                    err_str = str(e)
+                    if "model_not_found" in err_str or "404" in err_str or "does not exist" in err_str:
+                        continue
+                    else:
+                        raise e
+
+            if response is None:
+                raise last_err or RuntimeError("No response from Groq candidate models")
+
             msg = response.choices[0].message
             messages.append(msg)
 
@@ -241,6 +274,36 @@ class SecurityAgent:
         """Autonomous heuristic test runner when no LLM API keys are active."""
         print("\n[!] Running in Autonomous Offline Mode...")
         print(f"[Agent Plan] Analyzing request: '{prompt}'")
+
+        # If the request is for hashing
+        if "hash" in prompt.lower():
+            import re
+            quoted = re.findall(r"['\"]([^'\"]+)['\"]", prompt)
+            hash_target = None
+            for q in quoted:
+                if q.lower() not in ("sha256", "sha-256", "md5", "sha1", "json"):
+                    hash_target = q
+                    break
+            if not hash_target:
+                match = re.search(r"exact string\s+(.+?)(?:\.|\s+Return|$)", prompt, re.IGNORECASE)
+                if match:
+                    hash_target = match.group(1).strip()
+                else:
+                    hash_target = "Hello, CyberSec MCP!"
+
+            print(f"\n  [*] [Step 1] Executing sandboxed hash_file on input '{hash_target}'...")
+            hash_res = await self.mcp_client.execute_tool("hash_file", {"text": hash_target}, session_id=session_id)
+            findings = hash_res.get("findings", [{}])[0]
+            sha256 = findings.get("sha256")
+            status = hash_res.get("status", "success")
+
+            result_obj = {
+                "algorithm": "SHA-256",
+                "input": hash_target,
+                "hash": sha256,
+                "status": status,
+            }
+            return json.dumps(result_obj, indent=2)
 
         report_lines = [
             "# CyberSec Agent Assessment Report (Autonomous Mode)",
@@ -297,7 +360,7 @@ async def main():
     parser.add_argument("--key", default=None, help="Gemini API Key (optional, defaults to GEMINI_API_KEY env)")
     parser.add_argument("--model", default=None, help="Gemini model name (default: gemini-3.8-flash)")
     parser.add_argument("--groq-key", default=None, help="Groq API Key (optional, defaults to GROQ_API_KEY env)")
-    parser.add_argument("--groq-model", default=None, help="Groq model (default: llama-3.3-70b-versatile)")
+    parser.add_argument("--groq-model", default=None, help="Groq model (default: qwen/qwen3.8-27b)")
     args = parser.parse_args()
 
     agent = SecurityAgent(

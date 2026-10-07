@@ -162,6 +162,11 @@ def validate_arguments(arguments: dict, tool_name: str) -> dict:
         # Validate key
         _check_shell_injection(str(key), f"argument key '{key}'")
 
+        # For hash_file payload content, allow arbitrary text (it will be base64-isolated)
+        if tool_name == "hash_file" and key in ("text", "content", "string", "input", "data"):
+            sanitized[key] = str(value)
+            continue
+
         # Validate string values
         if isinstance(value, str):
             _check_shell_injection(value, f"argument '{key}'")

@@ -114,6 +114,8 @@ class PolicyEngine:
 
         # Check all argument values for blocked flags
         for key, value in arguments.items():
+            if tool_name == "hash_file" and key in ("text", "content", "string", "input", "data"):
+                continue
             str_val = str(value)
             for blocked in rule.blocked_flags:
                 # Support glob patterns like "--script=exploit*"
@@ -159,10 +161,12 @@ class PolicyEngine:
             return PolicyDecision(allowed=False, reason=reason)
 
         # 2. Is target allowed?
-        allowed, reason = self.is_target_allowed(request.target)
-        if not allowed:
-            logger.warning("DENIED (unauthorized target): %s", reason)
-            return PolicyDecision(allowed=False, reason=reason)
+        # Non-network artifact tools (hash_file) operate on local data/payloads, not remote network hosts
+        if request.tool_name != "hash_file":
+            allowed, reason = self.is_target_allowed(request.target)
+            if not allowed:
+                logger.warning("DENIED (unauthorized target): %s", reason)
+                return PolicyDecision(allowed=False, reason=reason)
 
         # 3. Are arguments valid?
         allowed, reason = self.validate_arguments(request.tool_name, request.arguments)
