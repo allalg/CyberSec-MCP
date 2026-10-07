@@ -43,7 +43,11 @@ class PolicyEngine:
         elif config_path is not None:
             self._config = self._load_config(Path(config_path))
         else:
-            self._config = PolicyConfig()
+            default_yaml = Path("config/policies.yaml")
+            if default_yaml.exists():
+                self._config = self._load_config(default_yaml)
+            else:
+                self._config = PolicyConfig()
 
     # ------------------------------------------------------------------
     # Config loading
@@ -75,16 +79,27 @@ class PolicyEngine:
         """Check target against allowed networks and domain patterns."""
         allowed = self._config.allowed_targets
 
+        # Normalize URL scheme and port if passed e.g. http://127.0.0.1:8000/
+        host = target.strip()
+        if "://" in host:
+            host = host.split("://", 1)[1]
+        if "/" in host:
+            host = host.split("/", 1)[0]
+        if ":" in host and not host.startswith("["):
+            host = host.split(":", 1)[0]
+        elif host.startswith("[") and "]" in host:
+            host = host[1:host.index("]")]
+
         # Try as IP first
-        if allowed.is_ip_allowed(target):
+        if allowed.is_ip_allowed(host):
             return True, ""
 
         # Try as domain
-        if allowed.is_domain_allowed(target):
+        if allowed.is_domain_allowed(host):
             return True, ""
 
         return False, (
-            f"Target {target!r} is not in the allowed list. "
+            f"Target {target!r} (host: {host!r}) is not in the allowed list. "
             f"Only private/lab targets are permitted."
         )
 
