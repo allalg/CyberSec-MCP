@@ -294,9 +294,29 @@ def web_assessment(target: str) -> str:
 
 
 def main() -> None:
-    """Run the CyberSec MCP server over stdio transport."""
-    logger.info("Starting CyberSec MCP Server over stdio...")
-    app.run(transport="stdio")
+    """Run the CyberSec MCP server over stdio or SSE transport."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="CyberSec MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "streamable-http"],
+        default="stdio",
+        help="Transport protocol (default: stdio; use 'sse' for browser / HTTP connectivity)",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Host interface for SSE server")
+    parser.add_argument("--port", type=int, default=8000, help="Port for SSE server")
+    args = parser.parse_args()
+
+    if args.transport == "sse":
+        logger.info("Starting CyberSec MCP Server over SSE at http://%s:%d/sse...", args.host, args.port)
+        app.run(transport="sse", host=args.host, port=args.port)
+    elif args.transport == "streamable-http":
+        logger.info("Starting CyberSec MCP Server over streamable-http at http://%s:%d...", args.host, args.port)
+        app.run(transport="streamable-http", host=args.host, port=args.port)
+    else:
+        logger.info("Starting CyberSec MCP Server over stdio...")
+        app.run(transport="stdio")
 
 
 if __name__ == "__main__":
